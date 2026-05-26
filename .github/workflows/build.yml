@@ -1,33 +1,46 @@
-name: Build All Variants
+name: Build Firmware (Enhanced)
 
 on:
   push:
     branches: [ main, master ]
-    tags:
-      - 'v*'
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build-matrix:
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        variant: [default, ru]
-        include:
-          - variant: default
-            make_target: ""
-            artifact_suffix: "EN"
-          - variant: ru
-            make_target: "ENABLE_RU=1"
-            artifact_suffix: "RU"
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        submodules: recursive
+        submodules: 'recursive'
+        fetch-depth: 0
+    
+    - name: Verify submodules
+      run: |
+        echo "Checking submodules status..."
+        git submodule status
+        
+        echo "Initializing submodules..."
+        git submodule update --init --recursive --force
+        
+        echo "Verifying submodules are present..."
+        if [ ! -d "external/printf" ]; then
+          echo "ERROR: external/printf not found!"
+          echo "Attempting manual clone..."
+          git clone https://github.com/mpaland/printf.git external/printf || true
+        fi
+        
+        if [ ! -d "external/CMSIS_5" ]; then
+          echo "ERROR: external/CMSIS_5 not found!"
+          echo "Attempting manual clone..."
+          git clone https://github.com/ARM-software/CMSIS_5.git external/CMSIS_5 || true
+        fi
+        
+        echo "Final directory structure:"
+        ls -la external/ || echo "external/ directory not found"
     
     - name: Set up build environment
       run: |
@@ -40,41 +53,50 @@ jobs:
           python3-pip \
           git
         
+        # Install Python dependencies
         pip3 install --upgrade pip
         pip3 install crcmod
     
-    - name: Build firmware - ${{ matrix.artifact_suffix }}
+    - name: Display toolchain versions
       run: |
-        make clean || true
-        make ${{ matrix.make_target }}
+        echo "=== Toolchain Information ==="
+        arm-none-eabi-gcc --version
+        make --version
+        python3 --version
+        echo "==========================="
     
-    - name: Rename artifacts
+    - name: Build firmware
       run: |
-        if [ -f firmware ]; then
-          cp firmware firmware-${{ matrix.artifact_suffix }}
-        fi
-        if [ -f firmware.bin ]; then
-          cp firmware.bin firmware-${{ matrix.artifact_suffix }}.bin
-        fi
-        if [ -f firmware.packed.bin ]; then
-          cp firmware.packed.bin firmware-${{ matrix.artifact_suffix }}.packed.bin
-        fi
+        echo "Starting build..."
+        make -j$(nproc) || make
     
-    - name: Upload firmware - ${{ matrix.artifact_suffix }}
+    - name: List build artifacts
+      run: |
+        echo "Build artifacts:"
+        ls -lh firmware* 2>/dev/null || echo "No firmware files found in root"
+        ls -lh *.bin 2>/dev/null || echo "No .bin files found in root"
+        ls -lh compiled-firmware/ 2>/dev/null || echo "No compiled-firmware directory"
+    
+    - name: Prepare artifacts
+      run: |
+        mkdir -p artifacts
+        cp firmware artifacts/ 2>/dev/null || echo "No firmware file"
+        cp firmware.bin artifacts/ 2>/dev/null || echo "No firmware.bin file"
+        cp firmware.packed.bin artifacts/ 2>/dev/null || echo "No firmware.packed.bin file"
+        cp *.bin artifacts/ 2>/dev/null || echo "No other .bin files"
+        ls -lh artifacts/
+    
+    - name: Upload firmware artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: firmware-${{ matrix.artifact_suffix }}-${{ github.sha }}
-        path: |
-          firmware-${{ matrix.artifact_suffix }}*
+        name: firmware-${{ github.sha }}
+        path: artifacts/*
         if-no-files-found: warn
     
-    - name: Upload to Release
+    - name: Create Release on Tag
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: |
-          firmware-${{ matrix.artifact_suffix }}
-          firmware-${{ matrix.artifact_suffix }}.bin
-          firmware-${{ matrix.artifact_suffix }}.packed.bin
+        files: artifacts/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

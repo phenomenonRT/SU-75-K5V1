@@ -1,102 +1,43 @@
-name: Build Firmware (Enhanced)
+name: Build with Docker
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 jobs:
-  build:
+  docker-build:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: 'recursive'
-        fetch-depth: 0
-    
-    - name: Verify submodules
-      run: |
-        echo "Checking submodules status..."
-        git submodule status
-        
-        echo "Initializing submodules..."
-        git submodule update --init --recursive --force
-        
-        echo "Verifying submodules are present..."
-        if [ ! -d "external/printf" ]; then
-          echo "ERROR: external/printf not found!"
-          echo "Attempting manual clone..."
-          git clone https://github.com/mpaland/printf.git external/printf || true
-        fi
-        
-        if [ ! -d "external/CMSIS_5" ]; then
-          echo "ERROR: external/CMSIS_5 not found!"
-          echo "Attempting manual clone..."
-          git clone https://github.com/ARM-software/CMSIS_5.git external/CMSIS_5 || true
-        fi
-        
-        echo "Final directory structure:"
-        ls -la external/ || echo "external/ directory not found"
-    
-    - name: Set up build environment
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          gcc-arm-none-eabi \
-          libnewlib-arm-none-eabi \
-          build-essential \
-          python3 \
-          python3-pip \
-          git
-        
-        # Install Python dependencies
-        pip3 install --upgrade pip
-        pip3 install crcmod
-    
-    - name: Display toolchain versions
-      run: |
-        echo "=== Toolchain Information ==="
-        arm-none-eabi-gcc --version
-        make --version
-        python3 --version
-        echo "==========================="
-    
-    - name: Build firmware
-      run: |
-        echo "Starting build..."
-        make -j$(nproc) || make
-    
-    - name: List build artifacts
-      run: |
-        echo "Build artifacts:"
-        ls -lh firmware* 2>/dev/null || echo "No firmware files found in root"
-        ls -lh *.bin 2>/dev/null || echo "No .bin files found in root"
-        ls -lh compiled-firmware/ 2>/dev/null || echo "No compiled-firmware directory"
-    
-    - name: Prepare artifacts
-      run: |
-        mkdir -p artifacts
-        cp firmware artifacts/ 2>/dev/null || echo "No firmware file"
-        cp firmware.bin artifacts/ 2>/dev/null || echo "No firmware.bin file"
-        cp firmware.packed.bin artifacts/ 2>/dev/null || echo "No firmware.packed.bin file"
-        cp *.bin artifacts/ 2>/dev/null || echo "No other .bin files"
-        ls -lh artifacts/
-    
-    - name: Upload firmware artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: firmware-${{ github.sha }}
-        path: artifacts/*
-        if-no-files-found: warn
-    
-    - name: Create Release on Tag
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: artifacts/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: docker build -t su75-builder .
+
+      - name: Build in Docker
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -w /app \
+            su75-builder \
+            bash -c "git submodule update --init --recursive && make"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-docker
+          path: |
+            firmware
+            firmware.bin
+            firmware.packed.bin
+          retention-days: 90

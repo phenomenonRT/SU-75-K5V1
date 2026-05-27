@@ -1,43 +1,85 @@
-name: Build with Docker
-
+name: Build SU-75 Firmware
+ 
+# Запускается при push и pull request
 on:
   push:
-    branches:
-      - main
-      - master
-  workflow_dispatch:
-
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+ 
 jobs:
-  docker-build:
+  build:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        run: docker build -t su75-builder .
-
-      - name: Build in Docker
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/app \
-            -w /app \
-            su75-builder \
-            bash -c "git submodule update --init --recursive && make"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: firmware-docker
-          path: |
-            firmware
-            firmware.bin
-            firmware.packed.bin
-          retention-days: 90
+    # Шаг 1: Проверяем код из репозитория
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+ 
+    # Шаг 2: Устанавливаем необходимые инструменты для сборки
+    - name: Install ARM GCC Toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          gcc-arm-none-eabi \
+          libnewlib-arm-none-eabi \
+          libnewlib-nano-arm-none-eabi \
+          gcc-10-multilib \
+          g++-10-multilib \
+          git \
+          python3 \
+          python3-pip \
+          python-is-python3
+        
+        # Устанавливаем Python модули если нужны
+        pip3 install crcmod
+ 
+    # Шаг 3: Проверяем установленные инструменты
+    - name: Verify ARM GCC Installation
+      run: |
+        arm-none-eabi-gcc --version
+        arm-none-eabi-ar --version
+        which make
+ 
+    # Шаг 4: Собираем проект
+    - name: Build Firmware
+      run: |
+        echo "=== Начинаем сборку прошивки ==="
+        make clean
+        make
+        echo "=== Сборка завершена ==="
+        ls -lh firmware* 2>/dev/null || echo "Файлы прошивки не найдены"
+ 
+    # Шаг 5: Копируем скомпилированные файлы
+    - name: Copy Firmware to Output
+      run: |
+        mkdir -p build-output
+        cp firmware* build-output/ 2>/dev/null || echo "No firmware files to copy"
+        cp *.bin build-output/ 2>/dev/null || echo "No .bin files to copy"
+        cp *.elf build-output/ 2>/dev/null || echo "No .elf files to copy"
+        ls -lh build-output/ || echo "Build output directory is empty"
+ 
+    # Шаг 6: Загружаем артефакты сборки
+    - name: Upload Firmware Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware-build-${{ github.run_number }}
+        path: build-output/
+        retention-days: 30
+      if: always()
+ 
+    # Шаг 7: Создаем Release для успешной сборки (опционально)
+    - name: Create Release (main branch only)
+      if: github.ref == 'refs/heads/main' && success()
+      uses: softprops/action-gh-release@v1
+      with:
+        files: build-output/*
+        tag_name: build-${{ github.run_number }}-${{ github.run_id }}
+        body: |
+          Automated build of SU-75 firmware
+          Commit: ${{ github.sha }}
+          Build: ${{ github.run_number }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
